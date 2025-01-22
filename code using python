@@ -1,0 +1,167 @@
+import pandas as pd
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
+
+# Load hospital and user data
+hospitals = pd.read_csv('updated_hospital_data.csv')  # Hospital dataset
+users = pd.read_csv('user_data.csv')  # User dataset
+
+# Preprocessing function to clean data
+def preprocess_data(df, required_columns):
+    """
+    Cleans and standardizes text data in specified columns.
+    Ensures all values are strings and warns if columns are missing.
+    """
+    df.columns = df.columns.str.strip().str.lower()  # Standardize column names
+    for col in required_columns:
+        if col in df.columns:
+            df[col] = df[col].astype(str).str.lower().str.strip()
+        else:
+            print(f"Warning: Required column '{col}' is missing. Adding empty column.")
+            df[col] = ""  # Add the missing column with empty values
+    return df
+
+# Preprocess hospital and user data
+required_hospital_columns = ['address', 'specializations', 'hospital id', 'name', 'disease symptoms', 'ratings']
+required_user_columns = ['user_id', 'name', 'location', 'medical_condition', 'gender', 'age']
+
+hospitals = preprocess_data(hospitals, required_hospital_columns)
+users = preprocess_data(users, required_user_columns)
+
+# TF-IDF Vectorization for hospital disease symptoms
+vectorizer = TfidfVectorizer(stop_words='english')
+hospital_features = vectorizer.fit_transform(hospitals['disease symptoms'])
+
+# Recommendation Function considering location, disease symptoms, and ratings
+def recommend_hospitals(user_location, user_disease, top_n=5, weight_location=0.4, weight_disease=0.4, weight_rating=0.2):
+    """
+    Recommends hospitals based on the user's location, medical condition, and hospital ratings.
+    """
+    # 1. Location similarity (binary: 1 if matches, else 0)
+    location_similarity = hospitals['address'].apply(lambda x: 1 if user_location in x else 0)
+
+    # 2. Disease-symptoms similarity (cosine similarity)
+    user_disease_vector = vectorizer.transform([user_disease])  # Vectorize user disease
+    disease_similarity = cosine_similarity(user_disease_vector, hospital_features).flatten()
+
+    # 3. Ratings normalization
+    hospitals['ratings'] = pd.to_numeric(hospitals['ratings'], errors='coerce')  # Convert ratings to numeric
+    hospitals['ratings'] = hospitals['ratings'].fillna(0)  # Replace NaN ratings with 0
+    normalized_ratings = hospitals['ratings'].apply(lambda x: x / 5)  # Normalize ratings to a 0-1 scale
+
+    # 4. Combine similarities with weighting
+    combined_similarity = (
+        weight_location * location_similarity +
+        weight_disease * disease_similarity +
+        weight_rating * normalized_ratings
+    )
+
+    # Add similarity scores to the hospital DataFrame
+    hospitals['similarity'] = combined_similarity
+
+    # 5. Sort and get top N hospitals
+    top_hospitals = hospitals.sort_values(by='similarity', ascending=False).head(top_n)
+    return top_hospitals[['name', 'address', 'ratings', 'similarity']]
+
+# Input validation functions
+def validate_yes_no(prompt):
+    """Validates that input is either 'yes' or 'no'."""
+    while True:
+        value = input(prompt).strip().lower()
+        if value in ['yes', 'no']:
+            return value
+        print("Invalid input. Please enter 'yes' or 'no'.")
+
+def validate_name(prompt):
+    """Validates that input for name contains only letters, spaces, and hyphens."""
+    while True:
+        value = input(prompt).strip()
+        if all(char.isalpha() or char.isspace() or char == '-' for char in value):
+            return value
+        print("Invalid name. Please enter only letters, spaces, or hyphens.")
+
+def validate_medical_condition(prompt):
+    """Validates that the input for medical condition contains only letters, spaces, and hyphens."""
+    while True:
+        value = input(prompt).strip()
+        if all(char.isalpha() or char.isspace() or char == '-' for char in value):
+            return value
+        print("Invalid medical condition. Please enter only letters, spaces, or hyphens.")
+
+def validate_gender(prompt):
+    """Validates gender input as M, F, or others."""
+    while True:
+        gender = input(prompt).strip().upper()
+        if gender in ['M', 'F', 'OTHERS']:
+            return gender
+
+def validate_age(prompt):
+    """Validates age input."""
+    while True:
+        try:
+            age = int(input(prompt).strip())
+            if age > 0:
+                return age
+            print("Age must be a positive number.")
+        except ValueError:
+            print("Invalid age. Please enter a valid number.")
+
+# Dynamic Input Handling
+def handle_user_input():
+    """Handles input for both new and existing users and provides recommendations."""
+    print("Welcome to the Hospital Recommendation System!")
+    is_new_user = validate_yes_no("Are you a new user? (yes/no): ")
+
+    if is_new_user == 'yes':
+        # New user flow
+        name = validate_name("Enter your name: ")
+        location = input("Enter your location: ").strip().lower()  # No validation for location
+        medical_condition = validate_medical_condition("Enter your medical condition: ").lower()
+        gender = validate_gender("Enter your gender (M/F/OTHERS): ")
+        age = validate_age("Enter your age: ")
+
+        # Add new user to the user database
+        new_user_id = int(users['user_id'].max()) + 1 if not users.empty else 1
+        new_user = {
+            'user_id': new_user_id,
+            'name': name,
+            'location': location,
+            'medical_condition': medical_condition,
+            'gender': gender,
+            'age': age
+        }
+        users.loc[len(users)] = new_user
+        print(f"Thank you, {name}. You have been added as a new user with ID: {new_user_id}")
+    else:
+        # Existing user flow
+        try:
+            user_id = int(input("Enter your user ID: ").strip())
+            if user_id in users['user_id'].astype(int).values:
+                user_data = users[users['user_id'].astype(int) == user_id].iloc[0]
+                location = user_data['location']
+                medical_condition = user_data['medical_condition']
+                print(f"Welcome back, {user_data['name']}! Using your stored data: Location - {location}, Medical Condition - {medical_condition}")
+            else:
+                print("User ID not found. Please register as a new user.")
+                return
+        except ValueError:
+            print("Invalid input. Please enter a valid user ID.")
+            return
+
+    # Recommend hospitals
+    recommendations = recommend_hospitals(location, medical_condition)
+
+    # Display recommendations
+    if recommendations.empty:
+        print("\nNo hospitals match your criteria. Please try again with different inputs.")
+    else:
+        print("\nRecommended Hospitals:")
+        for idx, hospital in recommendations.iterrows():
+            print(f"- {hospital['name']} (Rating: {hospital['ratings']}, Similarity Score: {hospital['similarity']:.2f})")
+
+    # Save updated user data
+    users.to_csv('user_data.csv', index=False)
+    print("\nUser data has been updated.")
+
+# Run the recommendation system
+handle_user_input()
